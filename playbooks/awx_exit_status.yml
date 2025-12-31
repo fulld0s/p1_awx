@@ -1,0 +1,12 @@
+- hosts: all     
+  gather_facts: no
+  tasks:
+
+    - name: set exit status
+      ansible.builtin.debug:
+         msg: "Exit_status = "
+      check_mode: yes
+      ignore_errors: yes
+
+    - name: delete temp files
+      include_tasks: awx_cleanup.yml

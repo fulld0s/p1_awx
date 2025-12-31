@@ -1,0 +1,37 @@
+- name: Prepare notifications from templates
+  hosts: localhost
+  gather_facts: no
+
+  vars:
+
+  tasks:
+    - name: Skip it if the notification is already set
+      meta: end_play
+      when: notification is defined
+
+    - name: Fail if notification_key isn't provided
+      fail:
+        msg: "'notification_key' variable is not defined or empty"
+      when: notification_key is undefined
+
+    - name: Fail if notification key not found
+      fail:
+        msg: "notification '{{ notification_key }}' not found in notifications"
+      when: notifications[notification_key] is not defined
+
+    - name: Set final notification for workflow
+      set_fact:
+        notification_all_outputs: >-
+          {% set logs = {} %}
+          {% for h in ['localhost'] %}
+            {% for key, value in hostvars[h].items() %}
+              {% if key is match('^lvl_[0-9]+$') and value.cmd_output is defined %}
+                {% set _ = logs.update({key ~ '_CMD_OUTPUT': value.cmd_output}) %}
+              {% endif %}
+            {% endfor %}
+          {% endfor %}
+          {{ logs }}
+    - name: Set final notification for workflow
+      set_stats:
+        data:
+          notification: "{{ notifications[notification_key] }}"

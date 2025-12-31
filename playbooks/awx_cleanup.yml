@@ -1,0 +1,22 @@
+#  name: Cleanup stuff
+
+    - name: load constants if not defined
+      include_vars: awx_constants.yml
+      when: not (const_loaded | default(False))
+
+    - name: show vars
+      debug:
+         var: hostvars[inventory_hostname]
+#      debug: var="{{ SQLS }}"
+#      when: SQLS is defined
+ 
+    - name: remove SQL files
+      shell:
+         cmd: "rm -rf {{ temp_path }}/{{ item }}"
+         executable: /bin/bash
+         warn: false
+      ignore_errors: True
+      loop: "{{ SQLS }}"
+      when: SQLS is defined
+
+

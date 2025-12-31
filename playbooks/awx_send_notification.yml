@@ -1,0 +1,278 @@
+- name: Send IUN notification
+  hosts: localhost
+  gather_facts: no
+
+  vars:
+
+  tasks:
+    - name: Check if notification should be skipped
+      fail:
+        msg: "skip_notification=1, skipping"
+      when: skip_notification | default(0) == 1
+
+    - name: Check if 'notification' variable is defined and not empty
+      fail:
+        msg: "'notification' variable is not defined or empty"
+      when: notification is undefined or notification | trim == ""
+
+    - name: Check if 'ticket' variable is defined and not empty
+      fail:
+        msg: "'ticket' variable is not defined or empty"
+      when: ticket is undefined or ticket | trim == ""
+
+    - name: Set API target
+      set_fact:
+        api_target: "{{ 'RT' if ticket is match('^TT[0-9]{1,9}$') else 'YT' if ticket is match('^PortaOne-[0-9]+$') else 'Unknown' }}"
+
+    - name: Set RT ticket
+      set_fact:
+        rt_ticket: "{{ ticket | regex_replace('^TT', '') }}"
+      when: api_target == 'RT'
+
+    - name: Construct multi-level output summary
+      set_fact:
+        all_levels_text: >-
+          {% for key, value in (notification_all_outputs | default({})).items() | sort %}
+          [{{ key | upper }}]:
+          {{ value }}
+          {% endfor %}
+        lvl: "{{ lvl_3 | default(lvl_2 | default(lvl_1 | default({}))) }}"
+
+    - name: Print lvl
+      debug:
+        msg: "Current lvl: {{ lvl }}"
+      when: lvl is defined
+
+    - name: Append data from variables to notification
+      set_fact:
+        updated_notification: "{{ notification |
+          replace('{{ cmd_output }}', lvl.cmd_output | default('')) |
+          replace('{{ all_outputs }}', all_levels_text | default('')) |
+          replace('{{ aux_cmd_output }}', lvl.aux_cmd_output | default('')) |
+          replace('{{ mr_from }}', mr_from | default('')) |
+          replace('{{ mr_to }}', mr_to | default('')) |
+          replace('\n', ' \n ') }}"
+      when: lvl.cmd_output is defined or lvl.aux_cmd_output is defined or mr_from is defined or mr_to is defined
+
+    - name: Set updated_notification when cmd_output/aux_cmd_output are not defined
+      set_fact:
+        updated_notification: "{{ notification | replace('\n', ' \n ') }}"
+      when: lvl.cmd_output is undefined and lvl.aux_cmd_output is undefined
+
+    - name: Send reply to the ticket in RT
+      uri:
+        url: "{{ rt_url }}/REST/1.0/ticket/{{ rt_ticket }}/comment"
+        method: POST
+        validate_certs: no
+        body_format: form-urlencoded
+        body:
+          user: "{{ rt_login }}"
+          pass: "{{ rt_password }}"
+          content: "id: {{ rt_ticket }}\nAction: correspond\nText: {{ updated_notification }}"
+        headers:
+          Content-Type: "application/x-www-form-urlencoded"
+      register: response
+      when: api_target == 'RT'
+
+    - name: Check response from RT
+      debug:
+        var: response
+      when: api_target == 'RT'
+
+    - name: Set status of RT ticket to 'open'
+      uri:
+        url: "{{ rt_url }}/REST/1.0/ticket/{{ rt_ticket }}/edit"
+        method: POST
+        validate_certs: no
+        body_format: form-urlencoded
+        body:
+          user: "{{ rt_login }}"
+          pass: "{{ rt_password }}"
+          content: "id: {{ rt_ticket }}\nStatus: open"
+        headers:
+          Content-Type: "application/x-www-form-urlencoded"
+      when: api_target == 'RT'
+
+    - name: Send reply to the ticket in YT
+      uri:
+        url: "{{ yt_url }}/api/issues/{{ ticket }}/comments"
+        method: POST
+        validate_certs: no
+        body: "{{ {'text': updated_notification + '\n @reply'} | to_json }}"
+        body_format: json
+        headers:
+          Content-Type: "application/json"
+          Accept: "application/json"
+          Authorization: "Bearer {{ yt_api_token }}"
+        status_code: [200]
+      register: response
+      when: (api_target == 'YT' and (subject is undefined or subject | trim == ""))
+
+    - name: Set status of YT ticket to 'Open'
+      uri:
+        url: "{{ yt_url }}/api/issues/{{ ticket }}"
+        method: POST
+        validate_certs: no
+        body_format: json
+        body:
+          customFields:
+            - name: "Status"
+              $type: "StateIssueCustomField"
+              value:
+                name: "Open"
+        headers:
+          Content-Type: "application/json"
+          Authorization: "Bearer {{ yt_api_token }}"
+        status_code: [200]
+      when: (api_target == 'YT' and (subject is undefined or subject | trim == ""))
+
+    - name: Fetch update TT details
+      uri:
+        url: "{{ yt_url }}/api/issues/{{ ticket }}?fields=id,summary,customFields(id,name,value(id,name,$type))"
+        method: GET
+        validate_certs: no
+        headers:
+          Authorization: "Bearer {{ yt_api_token }}"
+          Accept: "application/json"
+        return_content: yes
+        status_code: 200
+      register: issue_details
+      when: api_target == 'YT' and ticket is defined and subject is defined
+
+    - name: Extract tags from summary
+      set_fact:
+        tags: "{{ issue_details.json.summary | regex_findall('\\[([^\\]]+)\\]') | select('search', '^(?!update$)', 'i') | map('regex_replace', '^(.+)$', '[\\1]') | join(' ') }}"
+      when: issue_details.json.summary is defined
+
+    - name: Create a new ticket
+      uri:
+        url: "{{ yt_url }}/api/issues"
+        method: POST
+        validate_certs: no
+        body_format: json
+        headers:
+          Authorization: "Bearer {{ yt_api_token }}"
+          Content-Type: "application/json"
+          Accept: "application/json"
+        body: >-
+          {
+            "project": {
+              "id": "{{ project_id }}"
+            },
+            "summary": "{{ tags }} {{ subject }}",
+            "description": "{{ updated_notification | regex_replace('\r?\n', '\\n') }}",
+            "customFields": [
+              {
+                "name": "Priority",
+                "$type": "SingleEnumIssueCustomField",
+                "value": {
+                  "id": "{{ issue_details.json.customFields | selectattr('name','equalto','Priority') | map(attribute='value.id') | first }}"
+                }
+              },
+              {
+                "name": "Review",
+                "$type": "SingleEnumIssueCustomField",
+                "value": {
+                  "id": "{{ review_field_id }}"
+                }
+              },
+              {
+                "name": "Status",
+                "$type": "StateIssueCustomField",
+                "value": {
+                  "name": "{{ status | default('Stalled') }}"
+                }
+              },
+              {
+                "name": "Assignee",
+                "$type": "SingleUserIssueCustomField",
+                "value": {
+                  "id": "{{ issue_details.json.customFields | selectattr('name', 'equalto', 'Assignee') | map(attribute='value.id') | first }}"
+                }
+              },
+              {
+                "name": "Customer",
+                "$type": "SingleGroupIssueCustomField",
+                "value": {
+                  "id": "{{ issue_details.json.customFields | selectattr('name', 'equalto', 'Customer') | map(attribute='value.id') | first }}"
+                }
+              },
+              {
+                "name": "Support Group",
+                "$type": "SingleGroupIssueCustomField",
+                "value": {
+                  "id": "{{ issue_details.json.customFields | selectattr('name', 'equalto', 'Support Group') | map(attribute='value.id') | first }}"
+                }
+              },
+              {
+                "name": "Area",
+                "$type": "SingleEnumIssueCustomField",
+                "value": {
+                  "id": "42-1631"
+                }
+              }
+            ]
+          }
+        status_code: 200
+      register: yt_response
+      when: api_target == 'YT' and subject is defined and issue_details is defined
+
+    - name: Fetch new ticket info
+      uri:
+        url: "{{ yt_url }}/api/issues/{{ yt_response.json.id }}?fields=id,summary,project(shortName),numberInProject"
+        method: GET
+        validate_certs: no
+        headers:
+          Authorization: "Bearer {{ yt_api_token }}"
+          Accept: "application/json"
+        return_content: yes
+        status_code: 200
+      register: new_ticket_details
+      when: api_target == 'YT' and yt_response is defined and subject is defined
+
+    - name: Extract human readable ticket ID
+      set_fact:
+        new_ticket_id: "{{ new_ticket_details.json.project.shortName }}-{{ new_ticket_details.json.numberInProject }}"
+      when: api_target == 'YT' and new_ticket_details is defined and subject is defined
+
+    - name: Link new ticket as subtask of update ticket
+      uri:
+        url: "{{ yt_url }}/api/commands"
+        method: POST
+        validate_certs: no
+        body_format: json
+        headers:
+          Authorization: "Bearer {{ yt_api_token }}"
+          Content-Type: "application/json"
+          Accept: "application/json"
+        body: >-
+          {
+            "query": "subtask of {{ ticket }}",
+            "issues": [
+              {
+                "idReadable": "{{ new_ticket_id }}"
+              }
+            ]
+          }
+        status_code: 200
+      when: api_target == 'YT' and new_ticket_id is defined and subject is defined
+
+    - name: Check response from YT
+      debug:
+        var: yt_response
+      when: api_target == 'YT'
+
+    - name: Send list of actions as comment
+      uri:
+        url: "{{ yt_url }}/api/issues/{{ new_ticket_id }}/comments"
+        method: POST
+        validate_certs: no
+        body: "{{ {'text': actions + '\n @comment'} | to_json }}"
+        body_format: json
+        headers:
+          Content-Type: "application/json"
+          Accept: "application/json"
+          Authorization: "Bearer {{ yt_api_token }}"
+        status_code: [200]
+      register: response
+      when: api_target == 'YT' and subject is defined and actions is defined
