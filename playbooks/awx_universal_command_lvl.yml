@@ -7,7 +7,7 @@
     aux_cmd_var: "aux_command"
     pipefail_cmd: ""
     exit_on_stderr: true
-    
+
 
   tasks:
     - name: enable usage of pipefail
@@ -70,6 +70,13 @@
       shell:
          cmd: "{{ pipefail_cmd }}{{ vars[cmd_prefix]['cmd_text'] }}"
          executable: /bin/bash
+      environment: >-
+        {{
+          vars
+          | dict2items
+          | selectattr('key', 'match', '^AWX_')
+          | items2dict
+        }}
       when: vars[cmd_var] is defined
       register: cmd_result
 
@@ -85,7 +92,7 @@
     - name: fail task if sterr not empty
       fail: msg="XXX{{':'}} STDERR is not empty. If it is expected, set 'check_stderr{{':'}} 0' for IUN, or use redirect of stderr (like 2>/dev/null) "
       when: exit_on_stderr and cmd_result.stderr != ''
-      
+
     - name: out_xxx
       set_fact:
          xxx :
@@ -107,6 +114,8 @@
       set_stats:
         data:
            "{{ cmd_prefix }}": "{{ vars[cmd_prefix] }}"
+           "AWX_{{ cmd_prefix }}_cmd_output": "{{ vars[cmd_prefix].cmd_output | default('') }}"
+           "AWX_{{ cmd_prefix }}_aux_cmd_output": "{{ vars[cmd_prefix].aux_cmd_output | default('') }}"
         per_host: no  # <-- important
 
     - name: show res
