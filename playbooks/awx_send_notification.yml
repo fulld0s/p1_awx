@@ -43,21 +43,25 @@
         msg: "Current lvl: {{ lvl }}"
       when: lvl is defined
 
-    - name: Append data from variables to notification
+    - name: Replace variables in notification (backward compatible)
       set_fact:
-        updated_notification: "{{ notification |
-          replace('{{ cmd_output }}', lvl.cmd_output | default('')) |
-          replace('{{ all_outputs }}', all_levels_text | default('')) |
-          replace('{{ aux_cmd_output }}', lvl.aux_cmd_output | default('')) |
-          replace('{{ mr_from }}', mr_from | default('')) |
-          replace('{{ mr_to }}', mr_to | default('')) |
-          replace('\n', ' \n ') }}"
-      when: lvl.cmd_output is defined or lvl.aux_cmd_output is defined or mr_from is defined or mr_to is defined
-
-    - name: Set updated_notification when cmd_output/aux_cmd_output are not defined
-      set_fact:
-        updated_notification: "{{ notification | replace('\n', ' \n ') }}"
-      when: lvl.cmd_output is undefined and lvl.aux_cmd_output is undefined
+        updated_notification: >-
+          {% set notif = notification %}
+          {% for key in ['cmd_output','aux_cmd_output'] %}
+            {% if lvl[key] is defined %}
+              {% set notif = notif.replace('{{ lvl.' ~ key ~ ' }}', lvl[key] | string) %}
+            {% endif %}
+          {% endfor %}
+          {% for key, value in (notification_all_outputs | default({})).items() %}
+            {% set notif = notif.replace('$' ~ key, value | string) %}
+          {% endfor %}
+          {% if mr_from is defined %}
+            {% set notif = notif.replace('$mr_from', mr_from) %}
+          {% endif %}
+          {% if mr_to is defined %}
+            {% set notif = notif.replace('$mr_to', mr_to) %}
+          {% endif %}
+          {{ notif | replace('\n', ' \n ') }}
 
     - name: Send reply to the ticket in RT
       uri:
