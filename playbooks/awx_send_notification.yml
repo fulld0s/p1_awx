@@ -38,6 +38,19 @@
           {% endfor %}
         lvl: "{{ lvl_3 | default(lvl_2 | default(lvl_1 | default({}))) }}"
 
+    - name: Initialize expanded notification
+      set_fact:
+        notification_expanded: "{{ notification }}"
+
+    - name: Collect AWX_* variables
+      set_fact:
+        awx_env_vars: "{{ vars | dict2items | selectattr('key', 'match', '^AWX_') | items2dict }}"
+
+    - name: Expand $AWX_* variables inside notification
+      set_fact:
+        notification_expanded: "{{ notification_expanded | replace('$' ~ item.key, item.value | string) }}"
+      loop: "{{ awx_env_vars | dict2items }}"
+
     - name: Print lvl
       debug:
         msg: "Current lvl: {{ lvl }}"
@@ -45,7 +58,7 @@
 
     - name: Append data from variables to notification
       set_fact:
-        updated_notification: "{{ notification |
+        updated_notification: "{{ notification_expanded |
           replace('{{ cmd_output }}', lvl.cmd_output | default('')) |
           replace('{{ all_outputs }}', all_levels_text | default('')) |
           replace('{{ aux_cmd_output }}', lvl.aux_cmd_output | default('')) |
@@ -56,7 +69,7 @@
 
     - name: Set updated_notification when cmd_output/aux_cmd_output are not defined
       set_fact:
-        updated_notification: "{{ notification | replace('\n', ' \n ') }}"
+        updated_notification: "{{ notification_expanded | replace('\n', ' \n ') }}"
       when: lvl.cmd_output is undefined and lvl.aux_cmd_output is undefined
 
     - name: Send reply to the ticket in RT
