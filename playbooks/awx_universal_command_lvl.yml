@@ -68,14 +68,14 @@
 
     - name: run command
       shell:
-         cmd: |
-           set -a
-           {{ pipefail_cmd }}{{ vars[cmd_prefix]['cmd_text'] }}
-
-           echo '---AWX_ENV---'
-           env | grep '^AWX_' || true
-           set +a
-         executable: /bin/bash
+        cmd: |
+          set -a
+          {{ pipefail_cmd }}{{ vars[cmd_prefix]['cmd_text'] }}
+          echo '---AWX_ENV_B64---'
+          python3 -c "import os, json, base64; envs = {k: v for k, v in os.environ.items() if k.startswith('AWX_') and not k.startswith('AWX_lvl')}; print(base64.b64encode(json.dumps(envs).encode()).decode())"
+          echo '---END_AWX_ENV_B64---'
+          set +a
+        executable: /bin/bash
       environment: >-
         {{
           vars
@@ -101,12 +101,10 @@
 
     - name: out_xxx
       set_fact:
-         xxx :
-           cmd_output : >-
-             {{
-               (cmd_result.stdout | split('---AWX_ENV---'))[0] | trim
-             }}
-           aux_cmd_output : "{{ aux_cmd_result.stdout if aux_cmd_result.stdout is defined else '' }}"
+        xxx:
+          cmd_output: >-
+            {{ (cmd_result.stdout | split('---AWX_ENV_B64---'))[0] | trim }}
+          aux_cmd_output: "{{ aux_cmd_result.stdout if aux_cmd_result.stdout is defined else '' }}"
 
     - name: transfer facts to pass down to the next Job template
       set_fact:
@@ -120,22 +118,7 @@
 
     - name: extract custom AWX_* variables from environment
       set_fact:
-        awx_custom_env: >-
-          {{
-            dict(
-              (
-                (
-                  (cmd_result.stdout | split('---AWX_ENV---') | length > 1)
-                  | ternary(
-                      (cmd_result.stdout | split('---AWX_ENV---'))[1].splitlines(),
-                      []
-                    )
-                )
-                | select('match', '^AWX_.*=')
-                | map('split', '=', 1)
-              )
-            )
-          }}
+        awx_custom_env: "{{ (cmd_result.stdout.split('---AWX_ENV_B64---')[1].split('---END_AWX_ENV_B64---')[0] | trim | b64decode | from_json) if '---AWX_ENV_B64---' in cmd_result.stdout else {} }}"
 
     - name: transfer data to pass down to the next Job template
       set_stats:
