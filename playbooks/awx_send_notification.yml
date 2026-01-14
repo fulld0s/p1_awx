@@ -49,7 +49,7 @@
     - name: Expand $AWX_* variables inside notification
       set_fact:
         notification_expanded: "{{ notification_expanded | replace('$' ~ item.key, item.value | string) }}"
-      loop: "{{ awx_env_vars | dict2items }}"
+      loop: "{{ awx_env_vars | dict2items | sort(attribute='key', reverse=True) }}"
 
     - name: Print lvl
       debug:
